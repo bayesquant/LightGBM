@@ -17,17 +17,17 @@ namespace LightGBM {
 class Feature;
 
 /*!
-* \brief This class is used to store some meta(non-feature) data for tranining data,
+* \brief This class is used to store some meta(non-feature) data for training data,
 *        e.g. labels, weights, initial scores, qurey level informations.
 *
-* Some details:
-* 1. Label, used for traning.
-* 2. Weights, weighs of record, optional
-* 3. Query Boundaries, necessary for lambdarank.
-*    The documents of i-th query is in [ query_boundarise[i], query_boundarise[i+1] )
-* 4. Query Weights, auto calculate by weights and query_boundarise(if both of them are existed)
-*    the weight for i-th query is sum(query_boundarise[i] , .., query_boundarise[i+1]) / (query_boundarise[i + 1] -  query_boundarise[i+1])
-* 5. Initial score. optional. if exsitng, the model will boost from this score, otherwise will start from 0.
+*        Some details:
+*        1. Label, used for traning.
+*        2. Weights, weighs of records, optional
+*        3. Query Boundaries, necessary for lambdarank.
+*           The documents of i-th query is in [ query_boundarise[i], query_boundarise[i+1] )
+*        4. Query Weights, auto calculate by weights and query_boundarise(if both of them are existed)
+*           the weight for i-th query is sum(query_boundarise[i] , .., query_boundarise[i+1]) / (query_boundarise[i + 1] -  query_boundarise[i+1])
+*        5. Initial score. optional. if exsitng, the model will boost from this score, otherwise will start from 0.
 */
 class Metadata {
 public:
@@ -36,7 +36,7 @@ public:
   */
   Metadata();
   /*!
-  * \brief Initialize, will load qurey level informations, since it is need for sampling data
+  * \brief Initialization will load qurey level informations, since it is need for sampling data
   * \param data_filename Filename of data
   * \param init_score_filename Filename of initial score
   * \param is_int_label True if label is int type
@@ -110,14 +110,14 @@ public:
   }
 
   /*!
-  * \brief Get weights, if not exists, will return nullput
+  * \brief Get weights, if not exists, will return nullptr
   * \return Pointer of weights
   */
   inline const float* weights()
             const { return weights_; }
 
   /*!
-  * \brief Get data boundaries on queries, if not exists, will return nullput
+  * \brief Get data boundaries on queries, if not exists, will return nullptr
   *        we assume data will order by query, 
   *        the interval of [query_boundaris[i], query_boundaris[i+1])
   *        is the data indices for query i.
@@ -133,13 +133,13 @@ public:
   inline const data_size_t num_queries() const { return num_queries_; }
 
   /*!
-  * \brief Get weights for queries, if not exists, will return nullput
+  * \brief Get weights for queries, if not exists, will return nullptr
   * \return Pointer of weights for queries
   */
   inline const float* query_weights() const { return query_weights_; }
 
   /*!
-  * \brief Get initial scores, if not exists, will return nullput
+  * \brief Get initial scores, if not exists, will return nullptr
   * \return Pointer of initial scores
   */
   inline const score_t* init_score() const { return init_score_; }
@@ -231,7 +231,7 @@ public:
   * \param max_bin The maximal number of bin that feature values will bucket in
   * \param random_seed The seed for random generator
   * \param is_enable_sparse True for sparse feature
-  * \param predict_fun Used for initial model, will give a prediction score based on this function, thenn set as initial score
+  * \param predict_fun Used for initial model, will give a prediction score based on this function, then set as initial score
   */
   Dataset(const char* data_filename, const char* init_score_filename,
     int max_bin, int random_seed, bool is_enable_sparse, const PredictFunction& predict_fun);
@@ -243,7 +243,7 @@ public:
   * \param max_bin The maximal number of bin that feature values will bucket in
   * \param random_seed The seed for random generator
   * \param is_enable_sparse True for sparse feature
-  * \param predict_fun Used for initial model, will give a prediction score based on this function, thenn set as initial score
+  * \param predict_fun Used for initial model, will give a prediction score based on this function, then set as initial score
   */
   Dataset(const char* data_filename,
     int max_bin, int random_seed, bool is_enable_sparse,

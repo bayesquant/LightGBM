@@ -23,8 +23,8 @@ public:
   virtual ~Boosting() {}
 
   /*!
-  * \brief Initial logic
-  * \param config Config for boosting
+  * \brief Initialization logic
+  * \param config Configs for boosting
   * \param train_data Training data
   * \param object_function Training objective function
   * \param training_metrics Training metric
@@ -47,14 +47,14 @@ public:
   virtual void Train() = 0;
 
   /*!
-  * \brief Predtion for one record, not sigmoid transform
+  * \brief Prediction for one record, not sigmoid transform
   * \param feature_values Feature value on this record
   * \return Prediction result for this record
   */
   virtual double PredictRaw(const double * feature_values) const = 0;
 
   /*!
-  * \brief Predtion for one record, will use sigmoid transform if needed
+  * \brief Prediction for one record, sigmoid transformation will be used if needed
   * \param feature_values Feature value on this record
   * \return Prediction result for this record
   */

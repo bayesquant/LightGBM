@@ -20,7 +20,7 @@ public:
   virtual ~ConfigBase() {}
 
   /*!
-  * \brief SetLabelAt current config object by params
+  * \brief Set current config object by params
   * \param params Store the key and value for params
   */
   virtual void Set(
@@ -30,7 +30,7 @@ public:
   * \brief Get string value by specific name of key
   * \param params Store the key and value for params
   * \param name Name of key
-  * \param out Value will asign to out if key exists
+  * \param out Value will assign to out if key exists
   * \return True if key exists
   */
   inline bool GetString(
@@ -41,7 +41,7 @@ public:
   * \brief Get int value by specific name of key
   * \param params Store the key and value for params
   * \param name Name of key
-  * \param out Value will asign to out if key exists
+  * \param out Value will assign to out if key exists
   * \return True if key exists
   */
   inline bool GetInt(
@@ -52,7 +52,7 @@ public:
   * \brief Get double value by specific name of key
   * \param params Store the key and value for params
   * \param name Name of key
-  * \param out Value will asign to out if key exists
+  * \param out Value will assign to out if key exists
   * \return True if key exists
   */
   inline bool GetDouble(
@@ -63,7 +63,7 @@ public:
   * \brief Get bool value by specific name of key
   * \param params Store the key and value for params
   * \param name Name of key
-  * \param out Value will asign to out if key exists
+  * \param out Value will assign to out if key exists
   * \return True if key exists
   */
   inline bool GetBool(
@@ -120,6 +120,7 @@ public:
 struct MetricConfig: public ConfigBase {
 public:
   virtual ~MetricConfig() {}
+  int early_stopping_round = 0;
   int output_freq = 1;
   double sigmoid = 1;
   bool is_provide_training_metric = false;
@@ -155,6 +156,7 @@ public:
   double bagging_fraction = 1.0;
   int bagging_seed = 3;
   int bagging_freq = 0;
+  int early_stopping_round = 0;
   void Set(const std::unordered_map<std::string, std::string>& params) override;
 };
 
@@ -308,7 +310,9 @@ struct ParameterAlias {
       { "two_round", "use_two_round_loading" },
       { "mlist", "machine_list_file" },
       { "is_save_binary", "is_save_binary_file" },
-      { "save_binary", "is_save_binary_file" }
+      { "save_binary", "is_save_binary_file" },
+      { "early_stopping_rounds", "early_stopping_round"},
+      { "early_stopping", "early_stopping_round"}
     });
     std::unordered_map<std::string, std::string> tmp_map;
     for (const auto& pair : *params) {
