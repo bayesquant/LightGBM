@@ -8,15 +8,16 @@
 namespace LightGBM {
 
 Metadata::Metadata()
-  :label_(nullptr), label_int_(nullptr), weights_(nullptr), 
+  :label_(nullptr), label_int_(nullptr), weights_(nullptr),
   query_boundaries_(nullptr),
-  query_weights_(nullptr), init_score_(nullptr) {
+  query_weights_(nullptr), init_score_(nullptr), queries_(nullptr){
 
 }
 
-void Metadata::Init(const char * data_filename, const char* init_score_filename) {
+void Metadata::Init(const char * data_filename, const char* init_score_filename, const int num_class) {
   data_filename_ = data_filename;
   init_score_filename_ = init_score_filename;
+  num_class_ = num_class;
   // for lambdarank, it needs query data for partition data in parallel learning
   LoadQueryBoundaries();
   LoadWeights();
@@ -24,8 +25,9 @@ void Metadata::Init(const char * data_filename, const char* init_score_filename)
   LoadInitialScore();
 }
 
-void Metadata::Init(const char* init_score_filename) {
+void Metadata::Init(const char* init_score_filename, const int num_class) {
   init_score_filename_ = init_score_filename;
+  num_class_ = num_class;
   LoadInitialScore();
 }
 
@@ -36,12 +38,32 @@ Metadata::~Metadata() {
   if (query_boundaries_ != nullptr) { delete[] query_boundaries_; }
   if (query_weights_ != nullptr) { delete[] query_weights_; }
   if (init_score_ != nullptr) { delete[] init_score_; }
+  if (queries_ != nullptr) { delete[] queries_; }
 }
 
 
-void Metadata::InitLabel(data_size_t num_data) {
+void Metadata::Init(data_size_t num_data, int num_class, int weight_idx, int query_idx) {
   num_data_ = num_data;
+  num_class_ = num_class;
   label_ = new float[num_data_];
+  if (weight_idx >= 0) {
+    if (weights_ != nullptr) {
+      Log::Info("Using weights in data file, ignoring the additional weights file");
+      delete[] weights_;
+    }
+    weights_ = new float[num_data_];
+    num_weights_ = num_data_;
+    memset(weights_, 0, sizeof(float) * num_data_);
+  }
+  if (query_idx >= 0) {
+    if (query_boundaries_ != nullptr) {
+      Log::Info("Using query id in data file, ignoring the additional query file");
+      delete[] query_boundaries_;
+    }
+    if (query_weights_ != nullptr) { delete[] query_weights_; }
+    queries_ = new data_size_t[num_data_];
+    memset(queries_, 0, sizeof(data_size_t) * num_data_);
+  }
 }
 
 void Metadata::PartitionLabel(const std::vector<data_size_t>& used_indices) {
@@ -59,9 +81,35 @@ void Metadata::PartitionLabel(const std::vector<data_size_t>& used_indices) {
 
 void Metadata::CheckOrPartition(data_size_t num_all_data, const std::vector<data_size_t>& used_data_indices) {
   if (used_data_indices.size() == 0) {
+    if (queries_ != nullptr) {
+      // need convert query_id to boundaries
+      std::vector<data_size_t> tmp_buffer;
+      data_size_t last_qid = -1;
+      data_size_t cur_cnt = 0;
+      for (data_size_t i = 0; i < num_data_; ++i) {
+        if (last_qid != queries_[i]) {
+          if (cur_cnt > 0) {
+            tmp_buffer.push_back(cur_cnt);
+          }
+          cur_cnt = 0;
+          last_qid = queries_[i];
+        }
+        ++cur_cnt;
+      }
+      tmp_buffer.push_back(cur_cnt);
+      query_boundaries_ = new data_size_t[tmp_buffer.size() + 1];
+      num_queries_ = static_cast<data_size_t>(tmp_buffer.size());
+      query_boundaries_[0] = 0;
+      for (size_t i = 0; i < tmp_buffer.size(); ++i) {
+        query_boundaries_[i + 1] = query_boundaries_[i] + tmp_buffer[i];
+      }
+      LoadQueryWeights();
+      delete[] queries_;
+      queries_ = nullptr;
+    }
     // check weights
     if (weights_ != nullptr && num_weights_ != num_data_) {
-      Log::Stdout("init weight size doesn't equal with data file, will ignore");
+      Log::Fatal("Weights size doesn't match data size");
       delete[] weights_;
       num_weights_ = 0;
       weights_ = nullptr;
@@ -69,7 +117,7 @@ void Metadata::CheckOrPartition(data_size_t num_all_data, const std::vector<data
 
     // check query boundries
     if (query_boundaries_ != nullptr && query_boundaries_[num_queries_] != num_data_) {
-      Log::Stdout("init query size doesn't equal with data file, will ignore");
+      Log::Fatal("Query size doesn't match data size");
       delete[] query_boundaries_;
       num_queries_ = 0;
       query_boundaries_ = nullptr;
@@ -78,21 +126,22 @@ void Metadata::CheckOrPartition(data_size_t num_all_data, const std::vector<data
     // contain initial score file
     if (init_score_ != nullptr && num_init_score_ != num_data_) {
       delete[] init_score_;
-      Log::Stdout("init score size doesn't equal with data file, will ignore");
+      Log::Fatal("Initial score size doesn't match data size");
+      init_score_ = nullptr;
       num_init_score_ = 0;
     }
   } else {
     data_size_t num_used_data = static_cast<data_size_t>(used_data_indices.size());
     // check weights
     if (weights_ != nullptr && num_weights_ != num_all_data) {
-      Log::Stdout("init weight size doesn't equal with data file, will ignore");
+      Log::Fatal("Weights size doesn't match data size");
       delete[] weights_;
       num_weights_ = 0;
       weights_ = nullptr;
     }
     // check query boundries
     if (query_boundaries_ != nullptr && query_boundaries_[num_queries_] != num_all_data) {
-      Log::Stdout("init query size doesn't equal with data file, will ignore");
+      Log::Fatal("Query size doesn't match data size");
       delete[] query_boundaries_;
       num_queries_ = 0;
       query_boundaries_ = nullptr;
@@ -100,9 +149,10 @@ void Metadata::CheckOrPartition(data_size_t num_all_data, const std::vector<data
 
     // contain initial score file
     if (init_score_ != nullptr && num_init_score_ != num_all_data) {
-      Log::Stdout("init score size doesn't equal with data file, will ignore");
+      Log::Fatal("Initial score size doesn't match data size");
       delete[] init_score_;
       num_init_score_ = 0;
+      init_score_ = nullptr;
     }
 
     // get local weights
@@ -131,10 +181,10 @@ void Metadata::CheckOrPartition(data_size_t num_all_data, const std::vector<data
             used_query.push_back(qid);
             data_idx += len;
           } else {
-            Log::Stderr("data partition error, not according to query");
+            Log::Fatal("Data partition error, data didn't match queries");
           }
         } else {
-          Log::Stderr("data partition error, not according to query");
+          Log::Fatal("Data partition error, data didn't match queries");
         }
       }
       data_size_t * old_query_boundaries = query_boundaries_;
@@ -151,11 +201,13 @@ void Metadata::CheckOrPartition(data_size_t num_all_data, const std::vector<data
 
     // get local initial scores
     if (init_score_ != nullptr) {
-      score_t* old_scores = init_score_;
+      float* old_scores = init_score_;
       num_init_score_ = num_data_;
-      init_score_ = new score_t[num_init_score_];
-      for (size_t i = 0; i < used_data_indices.size(); ++i) {
-        init_score_[i] = old_scores[used_data_indices[i]];
+      init_score_ = new float[num_init_score_ * num_class_];
+      for (int k = 0; k < num_class_; ++k){
+        for (size_t i = 0; i < used_data_indices.size(); ++i) {
+          init_score_[k * num_data_ + i] = old_scores[k * num_all_data + used_data_indices[i]];
+        }
       }
       delete[] old_scores;
     }
@@ -166,10 +218,16 @@ void Metadata::CheckOrPartition(data_size_t num_all_data, const std::vector<data
 }
 
 
-void Metadata::SetInitScore(score_t* init_score) {
+void Metadata::SetInitScore(const float* init_score, data_size_t len) {
+  if (len != num_data_ * num_class_) {
+    Log::Fatal("Initial score size doesn't match data size");
+  }
   if (init_score_ != nullptr) { delete[] init_score_; }
   num_init_score_ = num_data_;
-  init_score_ = init_score;
+  init_score_ = new float[len];
+  for (data_size_t i = 0; i < len; ++i) {
+    init_score_[i] = init_score[i];
+  }
 }
 
 void Metadata::LoadWeights() {
@@ -177,12 +235,12 @@ void Metadata::LoadWeights() {
   std::string weight_filename(data_filename_);
   // default weight file name
   weight_filename.append(".weight");
-  TextReader<size_t> reader(weight_filename.c_str());
+  TextReader<size_t> reader(weight_filename.c_str(), false);
   reader.ReadAllLines();
   if (reader.Lines().size() <= 0) {
     return;
   }
-  Log::Stdout("Start to load weights");
+  Log::Info("Loading weights...");
   num_weights_ = static_cast<data_size_t>(reader.Lines().size());
   weights_ = new float[num_weights_];
   for (data_size_t i = 0; i < num_weights_; ++i) {
@@ -195,16 +253,32 @@ void Metadata::LoadWeights() {
 void Metadata::LoadInitialScore() {
   num_init_score_ = 0;
   if (init_score_filename_[0] == '\0') { return; }
-  TextReader<size_t> reader(init_score_filename_);
+  TextReader<size_t> reader(init_score_filename_, false);
   reader.ReadAllLines();
 
-  Log::Stdout("Start to load initial score");
+  Log::Info("Loading initial scores...");
   num_init_score_ = static_cast<data_size_t>(reader.Lines().size());
-  init_score_ = new score_t[num_init_score_];
+
+  init_score_ = new float[num_init_score_ * num_class_];
   double tmp = 0.0f;
-  for (data_size_t i = 0; i < num_init_score_; ++i) {
-    Common::Atof(reader.Lines()[i].c_str(), &tmp);
-    init_score_[i] = static_cast<score_t>(tmp);
+
+  if (num_class_ == 1){
+      for (data_size_t i = 0; i < num_init_score_; ++i) {
+        Common::Atof(reader.Lines()[i].c_str(), &tmp);
+        init_score_[i] = static_cast<float>(tmp);
+      }
+  } else {
+      std::vector<std::string> oneline_init_score;
+      for (data_size_t i = 0; i < num_init_score_; ++i) {
+        oneline_init_score = Common::Split(reader.Lines()[i].c_str(), '\t');
+        if (static_cast<int>(oneline_init_score.size()) != num_class_){
+            Log::Fatal("Invalid initial score file. Redundant or insufficient columns.");
+        }
+        for (int k = 0; k < num_class_; ++k) {
+          Common::Atof(oneline_init_score[k].c_str(), &tmp);
+          init_score_[k * num_init_score_ + i] = static_cast<float>(tmp);
+        }
+      }
   }
 }
 
@@ -213,12 +287,12 @@ void Metadata::LoadQueryBoundaries() {
   std::string query_filename(data_filename_);
   // default query file name
   query_filename.append(".query");
-  TextReader<size_t> reader(query_filename.c_str());
+  TextReader<size_t> reader(query_filename.c_str(), false);
   reader.ReadAllLines();
   if (reader.Lines().size() <= 0) {
     return;
   }
-  Log::Stdout("Start to load query boundries");
+  Log::Info("Loading query boundaries...");
   query_boundaries_ = new data_size_t[reader.Lines().size() + 1];
   num_queries_ = static_cast<data_size_t>(reader.Lines().size());
   query_boundaries_[0] = 0;
@@ -233,7 +307,7 @@ void Metadata::LoadQueryWeights() {
   if (weights_ == nullptr || query_boundaries_ == nullptr) {
     return;
   }
-  Log::Stdout("Start to load query weights");
+  Log::Info("Loading query weights...");
   query_weights_ = new float[num_queries_];
   for (data_size_t i = 0; i < num_queries_; ++i) {
     query_weights_[i] = 0.0f;
@@ -257,7 +331,7 @@ void Metadata::LoadFromMemory(const void* memory) {
   if (label_ != nullptr) { delete[] label_; }
   label_ = new float[num_data_];
   std::memcpy(label_, mem_ptr, sizeof(float)*num_data_);
-  mem_ptr += sizeof(float)*num_weights_;
+  mem_ptr += sizeof(float)*num_data_;
 
   if (num_weights_ > 0) {
     if (weights_ != nullptr) { delete[] weights_; }

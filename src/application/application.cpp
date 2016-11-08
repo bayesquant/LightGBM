@@ -69,18 +69,18 @@ void Application::LoadParameters(int argc, char** argv) {
       params[key] = value;
     }
     else {
-      Log::Stdout("Warning: unknown parameter in command line: %s", argv[i]);
+      Log::Warning("Unknown parameter in command line: %s", argv[i]);
     }
   }
   // check for alias
   ParameterAlias::KeyAliasTransform(&params);
   // read parameters from config file
   if (params.count("config_file") > 0) {
-    TextReader<size_t> config_reader(params["config_file"].c_str());
+    TextReader<size_t> config_reader(params["config_file"].c_str(), false);
     config_reader.ReadAllLines();
     if (config_reader.Lines().size() > 0) {
       for (auto& line : config_reader.Lines()) {
-        // remove str after #
+        // remove str after "#"
         if (line.size() > 0 && std::string::npos != line.find_first_of("#")) {
           line.erase(line.find_first_of("#"));
         }
@@ -95,17 +95,17 @@ void Application::LoadParameters(int argc, char** argv) {
           if (key.size() <= 0) {
             continue;
           }
-          // Command line have higher priority
+          // Command-line has higher priority
           if (params.count(key) == 0) {
             params[key] = value;
           }
         }
         else {
-          Log::Stdout("Warning: unknown parameter in config file: %s", line.c_str());
+          Log::Warning("Unknown parameter in config file: %s", line.c_str());
         }
       }
     } else {
-      Log::Stdout("config file: %s doesn't exist, will ignore",
+      Log::Warning("Config file %s doesn't exist, will ignore",
                                 params["config_file"].c_str());
     }
   }
@@ -113,22 +113,26 @@ void Application::LoadParameters(int argc, char** argv) {
   ParameterAlias::KeyAliasTransform(&params);
   // load configs
   config_.Set(params);
-  Log::Stdout("finished load parameters");
+  Log::Info("Finished loading parameters");
 }
 
 void Application::LoadData() {
   auto start_time = std::chrono::high_resolution_clock::now();
-  // predition is needed if using input initial model(continued train)
+  // prediction is needed if using input initial model(continued train)
   PredictFunction predict_fun = nullptr;
   Predictor* predictor = nullptr;
-  // load init model
-  if (config_.io_config.input_model.size() > 0) {
-    LoadModel();
-    if (boosting_->NumberOfSubModels() > 0) {
-      predictor = new Predictor(boosting_, config_.io_config.is_sigmoid);
+  // need to continue training
+  if (boosting_->NumberOfSubModels() > 0) {
+    predictor = new Predictor(boosting_, config_.io_config.is_sigmoid, config_.predict_leaf_index);
+    if (config_.io_config.num_class == 1){
       predict_fun =
         [&predictor](const std::vector<std::pair<int, double>>& features) {
         return predictor->PredictRawOneLine(features);
+      };
+    } else {
+      predict_fun =
+        [&predictor](const std::vector<std::pair<int, double>>& features) {
+        return predictor->PredictMulticlassOneLine(features);
       };
     }
   }
@@ -139,9 +143,7 @@ void Application::LoadData() {
   }
   train_data_ = new Dataset(config_.io_config.data_filename.c_str(),
                          config_.io_config.input_init_score.c_str(),
-                                          config_.io_config.max_bin,
-                                 config_.io_config.data_random_seed,
-                                 config_.io_config.is_enable_sparse,
+                                                  config_.io_config,
                                                        predict_fun);
   // load Training data
   if (config_.is_parallel_find_bin) {
@@ -158,7 +160,7 @@ void Application::LoadData() {
     train_data_->SaveBinaryFile();
   }
   // create training metric
-  if (config_.metric_config.is_provide_training_metric) {
+  if (config_.boosting_config->is_provide_training_metric) {
     for (auto metric_type : config_.metric_types) {
       Metric* metric =
         Metric::CreateMetric(metric_type, config_.metric_config);
@@ -168,14 +170,12 @@ void Application::LoadData() {
       train_metric_.push_back(metric);
     }
   }
-  // Add validation data, if exists
+  // Add validation data, if it exists
   for (size_t i = 0; i < config_.io_config.valid_data_filenames.size(); ++i) {
     // add
     valid_datas_.push_back(
       new Dataset(config_.io_config.valid_data_filenames[i].c_str(),
-                                          config_.io_config.max_bin,
-                                 config_.io_config.data_random_seed,
-                                 config_.io_config.is_enable_sparse,
+                                                  config_.io_config,
                                                       predict_fun));
     // load validation data like train data
     valid_datas_.back()->LoadValidationData(train_data_,
@@ -201,7 +201,7 @@ void Application::LoadData() {
   }
   auto end_time = std::chrono::high_resolution_clock::now();
   // output used time on each iteration
-  Log::Stdout("Finish loading data, use %f seconds ",
+  Log::Info("Finished loading data in %f seconds",
     std::chrono::duration<double, std::milli>(end_time - start_time) * 1e-3);
 }
 
@@ -209,7 +209,7 @@ void Application::InitTrain() {
   if (config_.is_parallel) {
     // need init network
     Network::Init(config_.network_config);
-    Log::Stdout("finish network initialization");
+    Log::Info("Finished initializing network");
     // sync global random seed for feature patition
     if (config_.boosting_type == BoostingType::kGBDT) {
       GBDTConfig* gbdt_config =
@@ -222,7 +222,8 @@ void Application::InitTrain() {
   }
   // create boosting
   boosting_ =
-    Boosting::CreateBoosting(config_.boosting_type, config_.boosting_config);
+    Boosting::CreateBoosting(config_.boosting_type,
+      config_.io_config.input_model.c_str());
   // create objective function
   objective_fun_ =
     ObjectiveFunction::CreateObjectiveFunction(config_.objective_type,
@@ -232,53 +233,58 @@ void Application::InitTrain() {
   // initialize the objective function
   objective_fun_->Init(train_data_->metadata(), train_data_->num_data());
   // initialize the boosting
-  boosting_->Init(train_data_, objective_fun_,
-    ConstPtrInVectorWarpper<Metric>(train_metric_),
-            config_.io_config.output_model.c_str());
+  boosting_->Init(config_.boosting_config, train_data_, objective_fun_,
+    ConstPtrInVectorWarpper<Metric>(train_metric_));
   // add validation data into boosting
   for (size_t i = 0; i < valid_datas_.size(); ++i) {
     boosting_->AddDataset(valid_datas_[i],
       ConstPtrInVectorWarpper<Metric>(valid_metrics_[i]));
   }
-  Log::Stdout("finish training init");
+  Log::Info("Finished initializing training");
 }
 
 void Application::Train() {
-  Log::Stdout("start train");
-  boosting_->Train();
-  Log::Stdout("finish train");
+  Log::Info("Started training...");
+  int total_iter = config_.boosting_config->num_iterations;
+  bool is_finished = false;
+  bool need_eval = true;
+  auto start_time = std::chrono::high_resolution_clock::now();
+  for (int iter = 0; iter < total_iter && !is_finished; ++iter) {
+    is_finished = boosting_->TrainOneIter(nullptr, nullptr, need_eval);
+    auto end_time = std::chrono::high_resolution_clock::now();
+    // output used time per iteration
+    Log::Info("%f seconds elapsed, finished iteration %d", std::chrono::duration<double,
+      std::milli>(end_time - start_time) * 1e-3, iter + 1);
+    boosting_->SaveModelToFile(is_finished, config_.io_config.output_model.c_str());
+  }
+  is_finished = true;
+  // save model to file
+  boosting_->SaveModelToFile(is_finished, config_.io_config.output_model.c_str());
+  Log::Info("Finished training");
 }
 
 
 void Application::Predict() {
+  boosting_->SetNumUsedModel(config_.io_config.num_model_predict);
   // create predictor
-  Predictor predictor(boosting_, config_.io_config.is_sigmoid);
-  predictor.Predict(config_.io_config.data_filename.c_str(), config_.io_config.output_result.c_str());
-  Log::Stdout("finish predict");
+  Predictor predictor(boosting_, config_.io_config.is_sigmoid,
+    config_.predict_leaf_index);
+  predictor.Predict(config_.io_config.data_filename.c_str(),
+    config_.io_config.output_result.c_str(), config_.io_config.has_header);
+  Log::Info("Finished prediction");
 }
 
 void Application::InitPredict() {
   boosting_ =
-    Boosting::CreateBoosting(config_.boosting_type, config_.boosting_config);
-  LoadModel();
-  Log::Stdout("finish predict init");
-}
-
-void Application::LoadModel() {
-  TextReader<size_t> model_reader(config_.io_config.input_model.c_str());
-  model_reader.ReadAllLines();
-  std::stringstream ss;
-  for (auto& line : model_reader.Lines()) {
-    ss << line << '\n';
-  }
-  boosting_->ModelsFromString(ss.str(), config_.io_config.num_model_predict);
+    Boosting::CreateBoosting(config_.io_config.input_model.c_str());
+  Log::Info("Finished initializing prediction");
 }
 
 template<typename T>
 T Application::GlobalSyncUpByMin(T& local) {
   T global = local;
   if (!config_.is_parallel) {
-    // not need to sync if not parallel learning
+    // no need to sync if not parallel learning
     return global;
   }
   Network::Allreduce(reinterpret_cast<char*>(&local),

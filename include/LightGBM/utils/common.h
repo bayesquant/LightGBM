@@ -9,6 +9,7 @@
 #include <sstream>
 #include <cstdint>
 #include <algorithm>
+#include <cmath>
 
 namespace LightGBM {
 
@@ -43,14 +44,39 @@ inline static std::string& RemoveQuotationSymbol(std::string& str) {
   str.erase(0, str.find_first_not_of("'\""));
   return str;
 }
-
-inline static std::vector<std::string> Split(const char* str, char delimiter) {
-  std::stringstream ss(str);
-  std::string tmp_str;
-  std::vector<std::string> ret;
-  while (std::getline(ss, tmp_str, delimiter)) {
-    ret.push_back(tmp_str);
+inline static bool StartsWith(const std::string& str, const std::string prefix) {
+  if (str.substr(0, prefix.size()) == prefix) {
+    return true;
+  } else {
+    return false;
   }
+}
+inline static std::vector<std::string> Split(const char* c_str, char delimiter) {
+  std::vector<std::string> ret;
+  std::string str(c_str);
+  size_t i = 0;
+  size_t pos = str.find(delimiter);
+  while (pos != std::string::npos) {
+    ret.push_back(str.substr(i, pos - i));
+    i = ++pos;
+    pos = str.find(delimiter, pos);
+  }
+  ret.push_back(str.substr(i));
+  return ret;
+}
+
+inline static std::vector<std::string> Split(const char* c_str, const char* delimiters) {
+  // will split when met any chars in delimiters
+  std::vector<std::string> ret;
+  std::string str(c_str);
+  size_t i = 0;
+  size_t pos = str.find_first_of(delimiters);
+  while (pos != std::string::npos) {
+    ret.push_back(str.substr(i, pos - i));
+    i = ++pos;
+    pos = str.find_first_of(delimiters, pos);
+  }
+  ret.push_back(str.substr(i));
   return ret;
 }
 
@@ -63,8 +89,7 @@ inline static const char* Atoi(const char* p, int* out) {
   if (*p == '-') {
     sign = -1;
     ++p;
-  }
-  else if (*p == '+') {
+  } else if (*p == '+') {
     ++p;
   }
   for (value = 0; *p >= '0' && *p <= '9'; ++p) {
@@ -77,7 +102,6 @@ inline static const char* Atoi(const char* p, int* out) {
   return p;
 }
 
-//ref to http://www.leapsecond.com/tools/fast_atof.c
 inline static const char* Atof(const char* p, double* out) {
   int frac;
   double sign, value, scale;
@@ -92,8 +116,7 @@ inline static const char* Atof(const char* p, double* out) {
   if (*p == '-') {
     sign = -1.0;
     ++p;
-  }
-  else if (*p == '+') {
+  } else if (*p == '+') {
     ++p;
   }
 
@@ -142,22 +165,21 @@ inline static const char* Atof(const char* p, double* out) {
     *out = sign * (frac ? (value / scale) : (value * scale));
   } else {
     size_t cnt = 0;
-    while (*(p + cnt) != '\0' && *(p + cnt) != ' ' 
+    while (*(p + cnt) != '\0' && *(p + cnt) != ' '
       && *(p + cnt) != '\t' && *(p + cnt) != ','
       && *(p + cnt) != '\n' && *(p + cnt) != '\r'
-      && *(p + cnt) != ':')  {
+      && *(p + cnt) != ':') {
       ++cnt;
     }
-    if(cnt > 0){
+    if (cnt > 0) {
       std::string tmp_str(p, cnt);
       std::transform(tmp_str.begin(), tmp_str.end(), tmp_str.begin(), ::tolower);
       if (tmp_str == std::string("na") || tmp_str == std::string("nan")) {
         *out = 0;
-      } else if( tmp_str == std::string("inf") || tmp_str == std::string("infinity")) {
+      } else if (tmp_str == std::string("inf") || tmp_str == std::string("infinity")) {
         *out = sign * 1e308;
-      }
-      else {
-        Log::Stderr("Unknow token %s in data file", tmp_str.c_str());
+      } else {
+        Log::Fatal("Unknown token %s in data file", tmp_str.c_str());
       }
       p += cnt;
     }
@@ -168,6 +190,24 @@ inline static const char* Atof(const char* p, double* out) {
   }
 
   return p;
+}
+
+
+
+inline bool AtoiAndCheck(const char* p, int* out) {
+  const char* after = Atoi(p, out);
+  if (*after != '\0') {
+    return false;
+  }
+  return true;
+}
+
+inline bool AtofAndCheck(const char* p, double* out) {
+  const char* after = Atof(p, out);
+  if (*after != '\0') {
+    return false;
+  }
+  return true;
 }
 
 inline static const char* SkipSpaceAndTab(const char* p) {
@@ -189,19 +229,33 @@ inline static std::string ArrayToString(const T* arr, int n, char delimiter) {
   if (n <= 0) {
     return std::string("");
   }
-  std::stringstream ss;
-  ss << arr[0];
+  std::stringstream str_buf;
+  str_buf << arr[0];
   for (int i = 1; i < n; ++i) {
-    ss << delimiter;
-    ss << arr[i];
+    str_buf << delimiter;
+    str_buf << arr[i];
   }
-  return ss.str();
+  return str_buf.str();
+}
+
+template<typename T>
+inline static std::string ArrayToString(std::vector<T> arr, char delimiter) {
+  if (arr.size() <= 0) {
+    return std::string("");
+  }
+  std::stringstream str_buf;
+  str_buf << arr[0];
+  for (size_t i = 1; i < arr.size(); ++i) {
+    str_buf << delimiter;
+    str_buf << arr[i];
+  }
+  return str_buf.str();
 }
 
 inline static void StringToIntArray(const std::string& str, char delimiter, size_t n, int* out) {
   std::vector<std::string> strs = Split(str.c_str(), delimiter);
   if (strs.size() != n) {
-    Log::Stderr("StringToIntArray error, size don't equal.");
+    Log::Fatal("StringToIntArray error, size doesn't match.");
   }
   for (size_t i = 0; i < strs.size(); ++i) {
     strs[i] = Trim(strs[i]);
@@ -209,27 +263,15 @@ inline static void StringToIntArray(const std::string& str, char delimiter, size
   }
 }
 
+
 inline static void StringToDoubleArray(const std::string& str, char delimiter, size_t n, double* out) {
   std::vector<std::string> strs = Split(str.c_str(), delimiter);
   if (strs.size() != n) {
-    Log::Stderr("StringToDoubleArray error, size don't equal");
+    Log::Fatal("StringToDoubleArray error, size doesn't match.");
   }
   for (size_t i = 0; i < strs.size(); ++i) {
     strs[i] = Trim(strs[i]);
     Atof(strs[i].c_str(), &out[i]);
-  }
-}
-
-inline static void StringToDoubleArray(const std::string& str, char delimiter, size_t n, float* out) {
-  std::vector<std::string> strs = Split(str.c_str(), delimiter);
-  if (strs.size() != n) {
-    Log::Stderr("StringToDoubleArray error, size don't equal");
-  }
-  double tmp;
-  for (size_t i = 0; i < strs.size(); ++i) {
-    strs[i] = Trim(strs[i]);
-    Atof(strs[i].c_str(), &tmp);
-    out[i] = static_cast<float>(tmp);
   }
 }
 
@@ -238,7 +280,7 @@ inline static std::vector<double> StringToDoubleArray(const std::string& str, ch
   std::vector<double> ret;
   for (size_t i = 0; i < strs.size(); ++i) {
     strs[i] = Trim(strs[i]);
-    double val = 0.0;
+    double val = 0.0f;
     Atof(strs[i].c_str(), &val);
     ret.push_back(val);
   }
@@ -294,6 +336,48 @@ static inline int64_t Pow2RoundUp(int64_t x) {
     t <<= 1;
   }
   return 0;
+}
+
+/*!
+ * \brief Do inplace softmax transformaton on p_rec
+ * \param p_rec The input/output vector of the values.
+ */
+inline void Softmax(std::vector<double>* p_rec) {
+  std::vector<double> &rec = *p_rec;
+  double wmax = rec[0];
+  for (size_t i = 1; i < rec.size(); ++i) {
+    wmax = std::max(rec[i], wmax);
+  }
+  double wsum = 0.0f;
+  for (size_t i = 0; i < rec.size(); ++i) {
+    rec[i] = std::exp(rec[i] - wmax);
+    wsum += rec[i];
+  }
+  for (size_t i = 0; i < rec.size(); ++i) {
+    rec[i] /= static_cast<double>(wsum);
+  }
+}
+
+template<typename T1, typename T2>
+inline void SortForPair(std::vector<T1>& keys, std::vector<T2>& values, size_t start, bool is_reverse = false) {
+  std::vector<std::pair<T1, T2>> arr;
+  for (size_t i = start; i < keys.size(); ++i) {
+    arr.emplace_back(keys[i], values[i]);
+  }
+  if (!is_reverse) {
+    std::sort(arr.begin(), arr.end(), [](const std::pair<T1, T2>& a, const std::pair<T1, T2>& b) {
+      return a.first < b.first;
+    });
+  } else {
+    std::sort(arr.begin(), arr.end(), [](const std::pair<T1, T2>& a, const std::pair<T1, T2>& b) {
+      return a.first > b.first;
+    });
+  }
+  for (size_t i = start; i < arr.size(); ++i) {
+    keys[i] = arr[i].first;
+    values[i] = arr[i].second;
+  }
+
 }
 
 }  // namespace Common

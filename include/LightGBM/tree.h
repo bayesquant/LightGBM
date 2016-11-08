@@ -43,11 +43,11 @@ public:
   * \return The index of new leaf.
   */
   int Split(int leaf, int feature, unsigned int threshold, int real_feature,
-            double threshold_double, score_t left_value,
-            score_t right_value, double gain);
+    double threshold_double, double left_value,
+    double right_value, double gain);
 
   /*! \brief Get the output of one leave */
-  inline score_t LeafOutput(int leaf) const { return leaf_value_[leaf]; }
+  inline double LeafOutput(int leaf) const { return leaf_value_[leaf]; }
 
   /*!
   * \brief Adding prediction value of this tree model to scores
@@ -74,10 +74,17 @@ public:
   * \param feature_values Feature value of this record
   * \return Prediction result
   */
-  inline score_t Predict(const double* feature_values) const;
+  inline double Predict(const double* feature_values) const;
+  inline int PredictLeafIndex(const double* feature_values) const;
 
   /*! \brief Get Number of leaves*/
   inline int num_leaves() const { return num_leaves_; }
+
+  /*! \brief Get depth of specific leaf*/
+  inline int leaf_depth(int leaf_idx) const { return leaf_depth_[leaf_idx]; }
+
+  /*! \brief Get feature of specific split*/
+  inline int split_feature_real(int split_idx) const { return split_feature_real_[split_idx]; }
 
   /*!
   * \brief Shrinkage for the tree's output
@@ -86,7 +93,7 @@ public:
   */
   inline void Shrinkage(double rate) {
     for (int i = 0; i < num_leaves_; ++i) {
-      leaf_value_[i] = static_cast<score_t>(leaf_value_[i] * rate);
+      leaf_value_[i] = leaf_value_[i] * rate;
     }
   }
 
@@ -137,13 +144,20 @@ private:
   /*! \brief The parent of leaf */
   int* leaf_parent_;
   /*! \brief Output of leaves */
-  score_t* leaf_value_;
+  double* leaf_value_;
+  /*! \brief Depth for leaves */
+  int* leaf_depth_;
 };
 
 
-inline score_t Tree::Predict(const double* feature_values)const {
+inline double Tree::Predict(const double* feature_values) const {
   int leaf = GetLeaf(feature_values);
   return LeafOutput(leaf);
+}
+
+inline int Tree::PredictLeafIndex(const double* feature_values) const {
+  int leaf = GetLeaf(feature_values);
+  return leaf;
 }
 
 inline int Tree::GetLeaf(const std::vector<BinIterator*>& iterators,

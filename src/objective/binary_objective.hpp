@@ -8,7 +8,7 @@
 
 namespace LightGBM {
 /*!
-* \brief Objective funtion for binary classification
+* \brief Objective function for binary classification
 */
 class BinaryLogloss: public ObjectiveFunction {
 public:
@@ -16,7 +16,7 @@ public:
     is_unbalance_ = config.is_unbalance;
     sigmoid_ = static_cast<score_t>(config.sigmoid);
     if (sigmoid_ <= 0.0) {
-      Log::Stderr("sigmoid param %f should greater than zero", sigmoid_);
+      Log::Fatal("Sigmoid parameter %f should be greater than zero", sigmoid_);
     }
   }
   ~BinaryLogloss() {}
@@ -34,10 +34,10 @@ public:
         ++cnt_negative;
       }
     }
-    Log::Stdout("number of postive:%d number of negative:%d", cnt_positive, cnt_negative);
+    Log::Info("Number of postive: %d, number of negative: %d", cnt_positive, cnt_negative);
     // cannot continue if all sample are same class
     if (cnt_positive == 0 || cnt_negative == 0) {
-      Log::Stderr("input training data only contain one class");
+      Log::Fatal("Training data only contains one class");
     }
     // use -1 for negative class, and 1 for positive class
     label_val_[0] = -1;
@@ -47,8 +47,13 @@ public:
     label_weights_[1] = 1.0f;
     // if using unbalance, change the labels weight
     if (is_unbalance_) {
-      label_weights_[1] = 1.0f / cnt_positive;
-      label_weights_[0] = 1.0f / cnt_negative;
+      if (cnt_positive > cnt_negative) {
+        label_weights_[1] = 1.0f;
+        label_weights_[0] = static_cast<score_t>(cnt_positive) / cnt_negative;
+      } else {
+        label_weights_[1] = static_cast<score_t>(cnt_negative) / cnt_positive;
+        label_weights_[0] = 1.0f;
+      }
     }
   }
 
@@ -80,7 +85,7 @@ public:
     }
   }
 
-  double GetSigmoid() const override {
+  score_t GetSigmoid() const override {
     return sigmoid_;
   }
 

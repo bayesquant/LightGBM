@@ -11,34 +11,151 @@
 #include <vector>
 #include <utility>
 #include <string>
+#include <sstream>
 
 namespace LightGBM {
 
 Dataset::Dataset(const char* data_filename, const char* init_score_filename,
-                 int max_bin, int random_seed, bool is_enable_sparse, const PredictFunction& predict_fun)
-  :data_filename_(data_filename), random_(random_seed),
-  max_bin_(max_bin), is_enable_sparse_(is_enable_sparse), predict_fun_(predict_fun) {
+  const IOConfig& io_config, const PredictFunction& predict_fun)
+  :data_filename_(data_filename), random_(io_config.data_random_seed),
+  max_bin_(io_config.max_bin), is_enable_sparse_(io_config.is_enable_sparse), predict_fun_(predict_fun) {
+
+  num_class_ = io_config.num_class;
 
   CheckCanLoadFromBin();
   if (is_loading_from_binfile_ && predict_fun != nullptr) {
-    Log::Stdout("cannot perform initial prediction for binary file, will use text file instead");
+    Log::Info("Cannot initialize prediction by using a binary file, using text file instead");
     is_loading_from_binfile_ = false;
   }
 
   if (!is_loading_from_binfile_) {
-    // load weight, query information and initilize score
-    metadata_.Init(data_filename, init_score_filename);
-    // create text parser
-    parser_ = Parser::CreateParser(data_filename_, 0, nullptr);
-    if (parser_ == nullptr) {
-      Log::Stderr("cannot recognise input data format, filename: %s", data_filename_);
-    }
+    // load weight, query information and initialize score
+    metadata_.Init(data_filename, init_score_filename, num_class_);
     // create text reader
-    text_reader_ = new TextReader<data_size_t>(data_filename);
+    text_reader_ = new TextReader<data_size_t>(data_filename, io_config.has_header);
+
+    std::unordered_map<std::string, int> name2idx;
+    // get column names
+    if (io_config.has_header) {
+      std::string first_line = text_reader_->first_line();
+      feature_names_ = Common::Split(first_line.c_str(), "\t ,");
+      for (size_t i = 0; i < feature_names_.size(); ++i) {
+        name2idx[feature_names_[i]] = static_cast<int>(i);
+      }
+    }
+    std::string name_prefix("name:");
+
+    // load label idx
+    if (io_config.label_column.size() > 0) {
+      if (Common::StartsWith(io_config.label_column, name_prefix)) {
+        std::string name = io_config.label_column.substr(name_prefix.size());
+        if (name2idx.count(name) > 0) {
+          label_idx_ = name2idx[name];
+          Log::Info("Using column %s as label", name.c_str());
+        } else {
+          Log::Fatal("Could not find label column %s in data file", name.c_str());
+        }
+      } else {
+        if (!Common::AtoiAndCheck(io_config.label_column.c_str(), &label_idx_)) {
+          Log::Fatal("label_column is not a number, \
+                      if you want to use a column name, \
+                      please add the prefix \"name:\" to the column name");
+        }
+        Log::Info("Using column number %d as label", label_idx_);
+      }
+    }
+    if (feature_names_.size() > 0) {
+      // erase label column name
+      feature_names_.erase(feature_names_.begin() + label_idx_);
+    }
+    // load ignore columns
+    if (io_config.ignore_column.size() > 0) {
+      if (Common::StartsWith(io_config.ignore_column, name_prefix)) {
+        std::string names = io_config.ignore_column.substr(name_prefix.size());
+        for (auto name : Common::Split(names.c_str(), ',')) {
+          if (name2idx.count(name) > 0) {
+            int tmp = name2idx[name];
+            // skip for label column
+            if (tmp > label_idx_) { tmp -= 1; }
+            ignore_features_.emplace(tmp);
+          } else {
+            Log::Fatal("Could not find ignore column %s in data file", name.c_str());
+          }
+        }
+      } else {
+        for (auto token : Common::Split(io_config.ignore_column.c_str(), ',')) {
+          int tmp = 0;
+          if (!Common::AtoiAndCheck(token.c_str(), &tmp)) {
+            Log::Fatal("ignore_column is not a number, \
+                        if you want to use a column name, \
+                        please add the prefix \"name:\" to the column name");
+          }
+          // skip for label column
+          if (tmp > label_idx_) { tmp -= 1; }
+          ignore_features_.emplace(tmp);
+        }
+      }
+
+    }
+
+    // load weight idx
+    if (io_config.weight_column.size() > 0) {
+      if (Common::StartsWith(io_config.weight_column, name_prefix)) {
+        std::string name = io_config.weight_column.substr(name_prefix.size());
+        if (name2idx.count(name) > 0) {
+          weight_idx_ = name2idx[name];
+          Log::Info("Using column %s as weight", name.c_str());
+        } else {
+          Log::Fatal("Could not find weight column %s in data file", name.c_str());
+        }
+      } else {
+        if (!Common::AtoiAndCheck(io_config.weight_column.c_str(), &weight_idx_)) {
+          Log::Fatal("weight_column is not a number, \
+                      if you want to use a column name, \
+                      please add the prefix \"name:\" to the column name");
+        }
+        Log::Info("Using column number %d as weight", weight_idx_);
+      }
+      // skip for label column
+      if (weight_idx_ > label_idx_) {
+        weight_idx_ -= 1;
+      }
+      ignore_features_.emplace(weight_idx_);
+    }
+
+    if (io_config.group_column.size() > 0) {
+      if (Common::StartsWith(io_config.group_column, name_prefix)) {
+        std::string name = io_config.group_column.substr(name_prefix.size());
+        if (name2idx.count(name) > 0) {
+          group_idx_ = name2idx[name];
+          Log::Info("Using column %s as group/query id", name.c_str());
+        } else {
+          Log::Fatal("Could not find group/query column %s in data file", name.c_str());
+        }
+      } else {
+        if (!Common::AtoiAndCheck(io_config.group_column.c_str(), &group_idx_)) {
+          Log::Fatal("group_column is not a number, \
+                      if you want to use a column name, \
+                      please add the prefix \"name:\" to the column name");
+        }
+        Log::Info("Using column number %d as group/query id", group_idx_);
+      }
+      // skip for label column
+      if (group_idx_ > label_idx_) {
+        group_idx_ -= 1;
+      }
+      ignore_features_.emplace(group_idx_);
+    }
+
+    // create text parser
+    parser_ = Parser::CreateParser(data_filename_, io_config.has_header, 0, label_idx_);
+    if (parser_ == nullptr) {
+      Log::Fatal("Could not recognize data format of %s", data_filename_);
+    }
   } else {
-    // only need to load initilize score, other meta data will load from bin flie
-    metadata_.Init(init_score_filename);
-    Log::Stdout("will load data set from binary file");
+    // only need to load initialize score, other meta data will be loaded from binary file
+    metadata_.Init(init_score_filename, num_class_);
+    Log::Info("Loading data set from binary file");
     parser_ = nullptr;
     text_reader_ = nullptr;
   }
@@ -82,7 +199,8 @@ void Dataset::LoadDataToMemory(int rank, int num_machines, bool is_pre_partition
         [this, rank, num_machines, &qid, &query_boundaries, &is_query_used, num_queries]
       (data_size_t line_idx) {
         if (qid >= num_queries) {
-          Log::Stderr("current query is exceed the range of query file, please ensure your query file is correct");
+          Log::Fatal("Current query exceed the range of query file, \
+                      please ensure your query file is correct");
         }
         if (line_idx >= query_boundaries[qid + 1]) {
           // if is new query
@@ -139,8 +257,8 @@ void Dataset::SampleDataFromFile(int rank, int num_machines, bool is_pre_partiti
         [this, rank, num_machines, &qid, &query_boundaries, &is_query_used, num_queries]
       (data_size_t line_idx) {
         if (qid >= num_queries) {
-          Log::Stderr("current query is exceed the range of query file, \
-                             please ensure your query file is correct");
+          Log::Fatal("Query id exceeds the range of the query file, \
+                      please ensure the query file is correct");
         }
         if (line_idx >= query_boundaries[qid + 1]) {
           // if is new query
@@ -177,7 +295,7 @@ void Dataset::ConstructBinMappers(int rank, int num_machines, const std::vector<
         size_t need_size = inner_data.first - sample_values.size() + 1;
         for (size_t j = 0; j < need_size; ++j) {
           // push i+1 0
-          sample_values.emplace_back(i + 1, 0.0);
+          sample_values.emplace_back(i + 1, 0.0f);
         }
       }
       // edit the feature value
@@ -190,18 +308,40 @@ void Dataset::ConstructBinMappers(int rank, int num_machines, const std::vector<
   // -1 means doesn't use this feature
   used_feature_map_ = std::vector<int>(sample_values.size(), -1);
   num_total_features_ = static_cast<int>(sample_values.size());
+
+  // check the range of label_idx, weight_idx and group_idx
+  CHECK(label_idx_ >= 0 && label_idx_ <= num_total_features_);
+  CHECK(weight_idx_ < 0 || weight_idx_ < num_total_features_);
+  CHECK(group_idx_ < 0 || group_idx_ < num_total_features_);
+
+  // fill feature_names_ if not header
+  if (feature_names_.size() <= 0) {
+    for (int i = 0; i < num_total_features_; ++i) {
+      std::stringstream str_buf;
+      str_buf << "Column_" << i;
+      feature_names_.push_back(str_buf.str());
+    }
+  }
+
   // start find bins
   if (num_machines == 1) {
     std::vector<BinMapper*> bin_mappers(sample_values.size());
-    // if only 1 machines, find bin locally
+    // if only one machine, find bin locally
     #pragma omp parallel for schedule(guided)
     for (int i = 0; i < static_cast<int>(sample_values.size()); ++i) {
+      if (ignore_features_.count(i) > 0) {
+        bin_mappers[i] = nullptr;
+        continue;
+      }
       bin_mappers[i] = new BinMapper();
       bin_mappers[i]->FindBin(&sample_values[i], max_bin_);
     }
 
     for (size_t i = 0; i < sample_values.size(); ++i) {
-      if (!bin_mappers[i]->is_trival()) {
+      if (bin_mappers[i] == nullptr) {
+        Log::Warning("Ignoring feature %s", feature_names_[i].c_str());
+      }
+      else if (!bin_mappers[i]->is_trival()) {
         // map real feature index to used feature index
         used_feature_map_[i] = static_cast<int>(features_.size());
         // push new feature
@@ -209,7 +349,7 @@ void Dataset::ConstructBinMappers(int rank, int num_machines, const std::vector<
                                              num_data_, is_enable_sparse_));
       } else {
         // if feature is trival(only 1 bin), free spaces
-        Log::Stdout("Warning: feature %d only contains one value, will ignore it", i);
+        Log::Warning("Ignoring feature %s, only has one value", feature_names_[i].c_str());
         delete bin_mappers[i];
       }
     }
@@ -256,12 +396,17 @@ void Dataset::ConstructBinMappers(int rank, int num_machines, const std::vector<
     Network::Allgather(input_buffer, buffer_size, start, len, output_buffer);
     // restore features bins from buffer
     for (int i = 0; i < total_num_feature; ++i) {
+      if (ignore_features_.count(i) > 0) {
+        Log::Warning("Ignoring feature %s", feature_names_[i].c_str());
+        continue;
+      }
       BinMapper* bin_mapper = new BinMapper();
       bin_mapper->CopyFrom(output_buffer + i * type_size);
       if (!bin_mapper->is_trival()) {
         used_feature_map_[i] = static_cast<int>(features_.size());
         features_.push_back(new Feature(static_cast<int>(i), bin_mapper, num_data_, is_enable_sparse_));
       } else {
+        Log::Warning("Ignoring feature %s, only has one value", feature_names_[i].c_str());
         delete bin_mapper;
       }
     }
@@ -276,6 +421,13 @@ void Dataset::ConstructBinMappers(int rank, int num_machines, const std::vector<
 
 
 void Dataset::LoadTrainData(int rank, int num_machines, bool is_pre_partition, bool use_two_round_loading) {
+  // don't support query id in data file when training in parallel
+  if (num_machines > 1 && !is_pre_partition) {
+    if (group_idx_ > 0) {
+      Log::Fatal("Using a query id without pre-partitioning the data file is not supported for parallel training. \
+                  Please use an additional query file or pre-partition the data");
+    }
+  }
   used_data_indices_.clear();
   if (!is_loading_from_binfile_ ) {
     if (!use_two_round_loading) {
@@ -287,7 +439,7 @@ void Dataset::LoadTrainData(int rank, int num_machines, bool is_pre_partition, b
       // construct feature bin mappers
       ConstructBinMappers(rank, num_machines, sample_data);
       // initialize label
-      metadata_.InitLabel(num_data_);
+      metadata_.Init(num_data_, num_class_, weight_idx_, group_idx_);
       // extract features
       ExtractFeaturesFromMemory();
     } else {
@@ -297,7 +449,7 @@ void Dataset::LoadTrainData(int rank, int num_machines, bool is_pre_partition, b
       // construct feature bin mappers
       ConstructBinMappers(rank, num_machines, sample_data);
       // initialize label
-      metadata_.InitLabel(num_data_);
+      metadata_.Init(num_data_, num_class_, weight_idx_, group_idx_);
 
       // extract features
       ExtractFeaturesFromFile();
@@ -322,7 +474,7 @@ void Dataset::LoadValidationData(const Dataset* train_set, bool use_two_round_lo
       // read data in memory
       LoadDataToMemory(0, 1, false);
       // initialize label
-      metadata_.InitLabel(num_data_);
+      metadata_.Init(num_data_, num_class_, weight_idx_, group_idx_);
       features_.clear();
       // copy feature bin mapper data
       for (Feature* feature : train_set->features_) {
@@ -330,13 +482,15 @@ void Dataset::LoadValidationData(const Dataset* train_set, bool use_two_round_lo
       }
       used_feature_map_ = train_set->used_feature_map_;
       num_features_ = static_cast<int>(features_.size());
+      num_total_features_ = train_set->num_total_features_;
+      feature_names_ = train_set->feature_names_;
       // extract features
       ExtractFeaturesFromMemory();
     } else {
       // Get number of lines of data file
       num_data_ = static_cast<data_size_t>(text_reader_->CountLine());
       // initialize label
-      metadata_.InitLabel(num_data_);
+      metadata_.Init(num_data_, num_class_, weight_idx_, group_idx_);
       features_.clear();
       // copy feature bin mapper data
       for (Feature* feature : train_set->features_) {
@@ -344,6 +498,8 @@ void Dataset::LoadValidationData(const Dataset* train_set, bool use_two_round_lo
       }
       used_feature_map_ = train_set->used_feature_map_;
       num_features_ = static_cast<int>(features_.size());
+      num_total_features_ = train_set->num_total_features_;
+      feature_names_ = train_set->feature_names_;
       // extract features
       ExtractFeaturesFromFile();
     }
@@ -359,7 +515,7 @@ void Dataset::LoadValidationData(const Dataset* train_set, bool use_two_round_lo
 
 void Dataset::ExtractFeaturesFromMemory() {
   std::vector<std::pair<int, double>> oneline_features;
-  double tmp_label = 0.0;
+  double tmp_label = 0.0f;
   if (predict_fun_ == nullptr) {
     // if doesn't need to prediction with initial model
     #pragma omp parallel for schedule(guided) private(oneline_features) firstprivate(tmp_label)
@@ -369,7 +525,7 @@ void Dataset::ExtractFeaturesFromMemory() {
       // parser
       parser_->ParseOneLine(text_reader_->Lines()[i].c_str(), &oneline_features, &tmp_label);
       // set label
-      metadata_.SetLabelAt(i, tmp_label);
+      metadata_.SetLabelAt(i, static_cast<float>(tmp_label));
       // free processed line:
       text_reader_->Lines()[i].clear();
       // shrink_to_fit will be very slow in linux, and seems not free memory, disable for now
@@ -381,11 +537,18 @@ void Dataset::ExtractFeaturesFromMemory() {
           // if is used feature
           features_[feature_idx]->PushData(tid, i, inner_data.second);
         }
+        else {
+          if (inner_data.first == weight_idx_) {
+            metadata_.SetWeightAt(i, static_cast<float>(inner_data.second));
+          } else if (inner_data.first == group_idx_) {
+            metadata_.SetQueryAt(i, static_cast<data_size_t>(inner_data.second));
+          }
+        }
       }
     }
   } else {
     // if need to prediction with initial model
-    score_t* init_score = new score_t[num_data_];
+    float* init_score = new float[num_data_ * num_class_];
     #pragma omp parallel for schedule(guided) private(oneline_features) firstprivate(tmp_label)
     for (data_size_t i = 0; i < num_data_; ++i) {
       const int tid = omp_get_thread_num();
@@ -393,9 +556,12 @@ void Dataset::ExtractFeaturesFromMemory() {
       // parser
       parser_->ParseOneLine(text_reader_->Lines()[i].c_str(), &oneline_features, &tmp_label);
       // set initial score
-      init_score[i] = static_cast<score_t>(predict_fun_(oneline_features));
+      std::vector<double> oneline_init_score = predict_fun_(oneline_features);
+      for (int k = 0; k < num_class_; ++k){
+        init_score[k * num_data_ + i] = static_cast<float>(oneline_init_score[k]);
+      }
       // set label
-      metadata_.SetLabelAt(i, tmp_label);
+      metadata_.SetLabelAt(i, static_cast<float>(tmp_label));
       // free processed line:
       text_reader_->Lines()[i].clear();
       // shrink_to_fit will be very slow in linux, and seems not free memory, disable for now
@@ -407,14 +573,22 @@ void Dataset::ExtractFeaturesFromMemory() {
           // if is used feature
           features_[feature_idx]->PushData(tid, i, inner_data.second);
         }
+        else {
+          if (inner_data.first == weight_idx_) {
+            metadata_.SetWeightAt(i, static_cast<float>(inner_data.second));
+          } else if (inner_data.first == group_idx_) {
+            metadata_.SetQueryAt(i, static_cast<data_size_t>(inner_data.second));
+          }
+        }
       }
     }
     // metadata_ will manage space of init_score
-    metadata_.SetInitScore(init_score);
+    metadata_.SetInitScore(init_score, num_data_ * num_class_);
+    delete[] init_score;
   }
 
   #pragma omp parallel for schedule(guided)
-  for (int i = 0; i < num_features_; i++) {
+  for (int i = 0; i < num_features_; ++i) {
     features_[i]->FinishLoad();
   }
   // text data can be free after loaded feature values
@@ -423,33 +597,43 @@ void Dataset::ExtractFeaturesFromMemory() {
 
 
 void Dataset::ExtractFeaturesFromFile() {
-  score_t* init_score = nullptr;
+  float* init_score = nullptr;
   if (predict_fun_ != nullptr) {
-    init_score = new score_t[num_data_];
+    init_score = new float[num_data_ * num_class_];
   }
   std::function<void(data_size_t, const std::vector<std::string>&)> process_fun =
     [this, &init_score]
   (data_size_t start_idx, const std::vector<std::string>& lines) {
     std::vector<std::pair<int, double>> oneline_features;
-    double tmp_label = 0.0;
+    double tmp_label = 0.0f;
     #pragma omp parallel for schedule(static) private(oneline_features) firstprivate(tmp_label)
-    for (data_size_t i = 0; i < static_cast<data_size_t>(lines.size()); i++) {
+    for (data_size_t i = 0; i < static_cast<data_size_t>(lines.size()); ++i) {
       const int tid = omp_get_thread_num();
       oneline_features.clear();
       // parser
       parser_->ParseOneLine(lines[i].c_str(), &oneline_features, &tmp_label);
       // set initial score
       if (init_score != nullptr) {
-        init_score[start_idx + i] = static_cast<score_t>(predict_fun_(oneline_features));
+        std::vector<double> oneline_init_score = predict_fun_(oneline_features);
+        for (int k = 0; k < num_class_; ++k){
+            init_score[k * num_data_ + start_idx + i] = static_cast<float>(oneline_init_score[k]);
+        }
       }
       // set label
-      metadata_.SetLabelAt(start_idx + i, tmp_label);
+      metadata_.SetLabelAt(start_idx + i, static_cast<float>(tmp_label));
       // push data
       for (auto& inner_data : oneline_features) {
         int feature_idx = used_feature_map_[inner_data.first];
         if (feature_idx >= 0) {
           // if is used feature
           features_[feature_idx]->PushData(tid, start_idx + i, inner_data.second);
+        }
+        else {
+          if (inner_data.first == weight_idx_) {
+            metadata_.SetWeightAt(start_idx + i, static_cast<float>(inner_data.second));
+          } else if (inner_data.first == group_idx_) {
+            metadata_.SetQueryAt(start_idx + i, static_cast<data_size_t>(inner_data.second));
+          }
         }
       }
     }
@@ -465,11 +649,12 @@ void Dataset::ExtractFeaturesFromFile() {
 
   // metadata_ will manage space of init_score
   if (init_score != nullptr) {
-    metadata_.SetInitScore(init_score);
+    metadata_.SetInitScore(init_score, num_data_ * num_class_);
+    delete[] init_score;
   }
 
   #pragma omp parallel for schedule(guided)
-  for (int i = 0; i < num_features_; i++) {
+  for (int i = 0; i < num_features_; ++i) {
     features_[i]->FinishLoad();
   }
 }
@@ -486,14 +671,18 @@ void Dataset::SaveBinaryFile() {
     file = fopen(bin_filename.c_str(), "wb");
     #endif
     if (file == NULL) {
-      Log::Stderr("cannot write binary data to %s ", bin_filename.c_str());
+      Log::Fatal("Could not write binary data to %s", bin_filename.c_str());
     }
 
-    Log::Stdout("start save binary file for data %s", data_filename_);
+    Log::Info("Saving data to binary file %s", data_filename_);
 
     // get size of header
     size_t size_of_header = sizeof(global_num_data_) + sizeof(is_enable_sparse_)
-      + sizeof(max_bin_) + sizeof(num_data_) + sizeof(num_features_) + sizeof(size_t) + sizeof(int) * used_feature_map_.size();
+      + sizeof(max_bin_) + sizeof(num_data_) + sizeof(num_features_) + sizeof(num_total_features_) +sizeof(size_t) + sizeof(int) * used_feature_map_.size();
+    // size of feature names
+    for (int i = 0; i < num_total_features_; ++i) {
+      size_of_header += feature_names_[i].size() + sizeof(int);
+    }
     fwrite(&size_of_header, sizeof(size_of_header), 1, file);
     // write header
     fwrite(&global_num_data_, sizeof(global_num_data_), 1, file);
@@ -501,9 +690,18 @@ void Dataset::SaveBinaryFile() {
     fwrite(&max_bin_, sizeof(max_bin_), 1, file);
     fwrite(&num_data_, sizeof(num_data_), 1, file);
     fwrite(&num_features_, sizeof(num_features_), 1, file);
+    fwrite(&num_total_features_, sizeof(num_features_), 1, file);
     size_t num_used_feature_map = used_feature_map_.size();
     fwrite(&num_used_feature_map, sizeof(num_used_feature_map), 1, file);
     fwrite(used_feature_map_.data(), sizeof(int), num_used_feature_map, file);
+
+    // write feature names
+    for (int i = 0; i < num_total_features_; ++i) {
+      int str_len = static_cast<int>(feature_names_[i].size());
+      fwrite(&str_len, sizeof(int), 1, file);
+      const char* c_str = feature_names_[i].c_str();
+      fwrite(c_str, sizeof(char), str_len, file);
+    }
 
     // get size of meta data
     size_t size_of_metadata = metadata_.SizesInByte();
@@ -556,7 +754,7 @@ void Dataset::LoadDataFromBinFile(int rank, int num_machines, bool is_pre_partit
   #endif
 
   if (file == NULL) {
-    Log::Stderr("cannot read binary data from %s", bin_filename.c_str());
+    Log::Fatal("Could not read binary data from %s", bin_filename.c_str());
   }
 
   // buffer to read binary file
@@ -567,7 +765,7 @@ void Dataset::LoadDataFromBinFile(int rank, int num_machines, bool is_pre_partit
   size_t read_cnt = fread(buffer, sizeof(size_t), 1, file);
 
   if (read_cnt != 1) {
-    Log::Stderr("binary file format error at header size");
+    Log::Fatal("Binary file error: header has the wrong size");
   }
 
   size_t size_of_head = *(reinterpret_cast<size_t*>(buffer));
@@ -582,7 +780,7 @@ void Dataset::LoadDataFromBinFile(int rank, int num_machines, bool is_pre_partit
   read_cnt = fread(buffer, 1, size_of_head, file);
 
   if (read_cnt != size_of_head) {
-    Log::Stderr("binary file format error at header");
+    Log::Fatal("Binary file error: header is incorrect");
   }
   // get header 
   const char* mem_ptr = buffer;
@@ -596,6 +794,8 @@ void Dataset::LoadDataFromBinFile(int rank, int num_machines, bool is_pre_partit
   mem_ptr += sizeof(num_data_);
   num_features_ = *(reinterpret_cast<const int*>(mem_ptr));
   mem_ptr += sizeof(num_features_);
+  num_total_features_ = *(reinterpret_cast<const int*>(mem_ptr));
+  mem_ptr += sizeof(num_total_features_);
   size_t num_used_feature_map = *(reinterpret_cast<const size_t*>(mem_ptr));
   mem_ptr += sizeof(num_used_feature_map);
   const int* tmp_feature_map = reinterpret_cast<const int*>(mem_ptr);
@@ -603,17 +803,32 @@ void Dataset::LoadDataFromBinFile(int rank, int num_machines, bool is_pre_partit
   for (size_t i = 0; i < num_used_feature_map; ++i) {
     used_feature_map_.push_back(tmp_feature_map[i]);
   }
+  mem_ptr += sizeof(int) * num_used_feature_map;
+  // get feature names
+  feature_names_.clear();
+  // write feature names
+  for (int i = 0; i < num_total_features_; ++i) {
+    int str_len = *(reinterpret_cast<const int*>(mem_ptr));
+    mem_ptr += sizeof(int);
+    std::stringstream str_buf;
+    for (int j = 0; j < str_len; ++j) {
+      char tmp_char = *(reinterpret_cast<const char*>(mem_ptr));
+      mem_ptr += sizeof(char);
+      str_buf << tmp_char;
+    }
+    feature_names_.emplace_back(str_buf.str());
+  }
 
   // read size of meta data
   read_cnt = fread(buffer, sizeof(size_t), 1, file);
 
   if (read_cnt != 1) {
-    Log::Stderr("binary file format error at size of meta data");
+    Log::Fatal("Binary file error: meta data has the wrong size");
   }
 
   size_t size_of_metadata = *(reinterpret_cast<size_t*>(buffer));
 
-  // re-allocmate space if not enough
+  // re-allocate space if not enough
   if (size_of_metadata > buffer_size) {
     delete[] buffer;
     buffer_size = size_of_metadata;
@@ -623,7 +838,7 @@ void Dataset::LoadDataFromBinFile(int rank, int num_machines, bool is_pre_partit
   read_cnt = fread(buffer, 1, size_of_metadata, file);
 
   if (read_cnt != size_of_metadata) {
-    Log::Stderr("binary file format error at meta data");
+    Log::Fatal("Binary file error: meta data is incorrect");
   }
   // load meta data
   metadata_.LoadFromMemory(buffer);
@@ -635,7 +850,7 @@ void Dataset::LoadDataFromBinFile(int rank, int num_machines, bool is_pre_partit
     const data_size_t* query_boundaries = metadata_.query_boundaries();
     if (query_boundaries == nullptr) {
       // if not contain query file, minimal sample unit is one record
-      for (data_size_t i = 0; i < num_data_; i++) {
+      for (data_size_t i = 0; i < num_data_; ++i) {
         if (random_.NextInt(0, num_machines) == rank) {
           used_data_indices_.push_back(i);
         } 
@@ -645,9 +860,9 @@ void Dataset::LoadDataFromBinFile(int rank, int num_machines, bool is_pre_partit
       data_size_t num_queries = metadata_.num_queries();
       data_size_t qid = -1;
       bool is_query_used = false;
-      for (data_size_t i = 0; i < num_data_; i++) {
+      for (data_size_t i = 0; i < num_data_; ++i) {
         if (qid >= num_queries) {
-          Log::Stderr("current query is exceed the range of query file, please ensure your query file is correct");
+          Log::Fatal("Current query exceeds the range of the query file, please ensure the query file is correct");
         }
         if (i >= query_boundaries[qid + 1]) {
           // if is new query
@@ -670,10 +885,10 @@ void Dataset::LoadDataFromBinFile(int rank, int num_machines, bool is_pre_partit
     // read feature size
     read_cnt = fread(buffer, sizeof(size_t), 1, file);
     if (read_cnt != 1) {
-      Log::Stderr("binary file format error at feature %d's size", i);
+      Log::Fatal("Binary file error: feature %d has the wrong size", i);
     }
     size_t size_of_feature = *(reinterpret_cast<size_t*>(buffer));
-    // re-allocmate space if not enough
+    // re-allocate space if not enough
     if (size_of_feature > buffer_size) {
       delete[] buffer;
       buffer_size = size_of_feature;
@@ -683,7 +898,7 @@ void Dataset::LoadDataFromBinFile(int rank, int num_machines, bool is_pre_partit
     read_cnt = fread(buffer, 1, size_of_feature, file);
 
     if (read_cnt != size_of_feature) {
-      Log::Stderr("binary file format error at feature %d loading , read count %d", i, read_cnt);
+      Log::Fatal("Binary file error: feature %d is incorrect, read count: %d", i, read_cnt);
     }
     features_.push_back(new Feature(buffer, static_cast<data_size_t>(global_num_data_), used_data_indices_));
   }
@@ -693,10 +908,10 @@ void Dataset::LoadDataFromBinFile(int rank, int num_machines, bool is_pre_partit
 
 void Dataset::CheckDataset() {
   if (num_data_ <= 0) {
-    Log::Stderr("data size of %s is zero", data_filename_);
+    Log::Fatal("Data file %s is empty", data_filename_);
   }
   if (features_.size() <= 0) {
-    Log::Stderr("not useful feature of data %s", data_filename_);
+    Log::Fatal("No usable features in data file %s", data_filename_);
   }
 }
 

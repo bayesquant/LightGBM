@@ -28,7 +28,7 @@ public:
     : num_data_(num_data) {
     default_bin_ = static_cast<VAL_T>(default_bin);
     if (default_bin_ != 0) {
-      Log::Stdout("Warning: Having sparse feature with negative values. Will let negative values equal zero as well");
+      Log::Info("Warning: sparse feature with negative values, treating negative values as zero");
     }
     #pragma omp parallel
     #pragma omp master
@@ -54,17 +54,19 @@ public:
   void ConstructHistogram(data_size_t*, data_size_t , const score_t* ,
                  const score_t* , HistogramBinEntry*) const override {
     // Will use OrderedSparseBin->ConstructHistogram() instead
-    Log::Stderr("Should use OrderedSparseBin->ConstructHistogram() instead");
+    Log::Info("Using OrderedSparseBin->ConstructHistogram() instead");
   }
 
   data_size_t Split(unsigned int threshold, data_size_t* data_indices, data_size_t num_data,
                          data_size_t* lte_indices, data_size_t* gt_indices) const override {
+    // not need to split
+    if (num_data <= 0) { return 0; }
     const auto fast_pair = fast_index_[(data_indices[0]) >> fast_index_shift_];
     data_size_t j = fast_pair.first;
     data_size_t cur_pos = fast_pair.second;
     data_size_t lte_count = 0;
     data_size_t gt_count = 0;
-    for (data_size_t i = 0; i < num_data; i++) {
+    for (data_size_t i = 0; i < num_data; ++i) {
       const data_size_t idx = data_indices[i];
       while (cur_pos < idx && j < num_vals_) {
         ++j;
@@ -92,12 +94,12 @@ public:
   void FinishLoad() override {
     // get total non zero size
     size_t non_zero_size = 0;
-    for (size_t i = 0; i < push_buffers_.size(); i++) {
+    for (size_t i = 0; i < push_buffers_.size(); ++i) {
       non_zero_size += push_buffers_[i].size();
     }
     // merge
     non_zero_pair_.reserve(non_zero_size);
-    for (size_t i = 0; i < push_buffers_.size(); i++) {
+    for (size_t i = 0; i < push_buffers_.size(); ++i) {
       non_zero_pair_.insert(non_zero_pair_.end(), push_buffers_[i].begin(), push_buffers_[i].end());
       push_buffers_[i].clear();
       push_buffers_[i].shrink_to_fit();
@@ -122,7 +124,7 @@ public:
     // transform to delta array
     const uint8_t kMaxDelta = 255;
     data_size_t last_idx = 0;
-    for (size_t i = 0; i < non_zero_pair.size(); i++) {
+    for (size_t i = 0; i < non_zero_pair.size(); ++i) {
       const data_size_t cur_idx = non_zero_pair[i].first;
       const VAL_T bin = non_zero_pair[i].second;
       data_size_t cur_delta = cur_idx - last_idx;
@@ -198,7 +200,7 @@ public:
       delta_.clear();
       vals_.clear();
       num_vals_ = tmp_num_vals;
-      for (data_size_t i = 0; i < num_vals_; i++) {
+      for (data_size_t i = 0; i < num_vals_; ++i) {
         delta_.push_back(tmp_delta[i]);
         vals_.push_back(tmp_vals[i]);
       }
@@ -261,7 +263,7 @@ public:
       ++i_delta_;
       cur_pos_ += bin_data_->delta_[i_delta_];
     }
-    if (idx == cur_pos_ && i_delta_ >= 0 
+    if (idx == cur_pos_ && i_delta_ >= 0
       && i_delta_ < bin_data_->vals_.size()) {
       return bin_data_->vals_[i_delta_];
     } else { return 0; }
